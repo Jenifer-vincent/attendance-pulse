@@ -1,0 +1,17 @@
+{
+  "name": "AttendPulse Attendance Guardian",
+  "short_name": "AttendPulse",
+  "description": "College attendance tracking and parent alert system.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#F8F9FB",
+  "theme_color": "#4F46E5",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "/favicon.ico",
+      "sizes": "32x32 48x48 64x64 128x128 256x256",
+      "type": "image/x-icon"
+    }
+  ]
+}
