@@ -58,7 +58,6 @@ function LogsPage() {
             id: doc.id,
 
             action: raw.action ?? "upload",
-
             // Your Firebase field is timestamp, not datetime
             datetime: raw.timestamp?.toDate
               ? raw.timestamp.toDate().toISOString()

@@ -16,6 +16,9 @@ dist-ssr
 .nitro
 *.local
 
+# Environment variables (keep real credentials out of version control)
+.env
+
 # Wrangler / Cloudflare
 .wrangler/
 .dev.vars
