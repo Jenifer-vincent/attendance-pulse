@@ -92,24 +92,34 @@ function NotifPage() {
         for (const studentDoc of studentSnapshot.docs) {
           const student = studentDoc.data();
 
+          const subjects = student.subjects || {};
+          const lowSubjects = Object.entries(subjects)
+            .filter(([_, score]) => Number(score) < 75)
+            .map(([subject, score]) => ({ subject, attendance: Number(score) }));
+
           const attendance = Number(student.attendance ?? 0);
+          const isLow = attendance < 75 || lowSubjects.length > 0;
+
           console.log(
             "CHECKING STUDENT:",
             studentDoc.id,
             "attendance:",
             attendance,
+            "lowSubjects:",
+            lowSubjects,
             "already has notification:",
             existingStudentIds.has(studentDoc.id)
           );
 
           if (
-            attendance < 75 &&
+            isLow &&
             !existingStudentIds.has(studentDoc.id)
           ) {
             const notificationData = {
               stud_id: studentDoc.id,
               status: "pending",
               subject: "Low attendance alert",
+              flaggedSubjects: lowSubjects,
               timestamp: serverTimestamp(),
             };
 

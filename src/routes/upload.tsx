@@ -388,13 +388,15 @@ function UploadPage() {
                   </thead>
                   <tbody className="divide-y divide-border">
                     {[
-                      ["register_no", "string", "CS21012"],
-                      ["student_name", "string", "Aarav Sharma"],
-                      ["department", "string", "Computer Science"],
-                      ["year", "string", "3rd Year"],
-                      ["attendance_percent", "number 0–100", "72"],
-                      ["parent_name", "string", "Rakesh Sharma"],
-                      ["parent_phone", "E.164 phone", "+91 9876543210"],
+                      ["Register No", "string", "CS001"],
+                      ["Student Name", "string", "Aarav Sharma"],
+                      ["Department", "string", "BCA"],
+                      ["Year", "string", "3rd Year"],
+                      ["Parent Name", "string", "Rakesh Sharma"],
+                      ["Parent Email", "string (email)", "parent1@example.com"],
+                      ["Parent Number", "E.164 phone", "+919876543210"],
+                      ["Mathematics, Physics, DBMS...", "number 0–100", "68, 72, 81 (Subject-wise attendance)"],
+                      ["attendance_percent (optional)", "number 0–100", "74 (Overall average if no subjects)"],
                     ].map(([c, t, e]) => (
                       <tr key={c}>
                         <td className="py-2 pr-4 font-mono text-xs text-foreground">{c}</td>

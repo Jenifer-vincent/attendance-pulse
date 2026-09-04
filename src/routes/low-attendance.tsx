@@ -2,13 +2,12 @@ import { createFileRoute } from "@tanstack/react-router";
 import { AppLayout } from "@/components/app-layout";
 import { useState, useMemo, useEffect } from "react";
 import { AlertTriangle, Send } from "lucide-react";
-import { flaggedStudents, criticalStudents } from "@/lib/data";
-import { onAuthStateChanged } from "firebase/auth";
 import { auth, db } from "@/lib/firebase";
 import { collection, getDocs } from "firebase/firestore";
 import { StatusBadge } from "@/components/status-badge";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
+import { extractSubjectsAndAttendance } from "./preview";
 
 export const Route = createFileRoute("/low-attendance")({
   head: () => ({
@@ -39,34 +38,52 @@ function LowAttendancePage() {
   const [criticalCount, setCriticalCount] = useState(0);
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (user) => {
-      if (user) {
-        try {
-          const snapshot = await getDocs(collection(db, "students"));
+    const fetchFlaggedStudents = async () => {
+      try {
+        console.log("[LOW ATTENDANCE FETCH] Querying Firestore 'students' collection...");
+        const snapshot = await getDocs(collection(db, "students"));
+        console.log("[LOW ATTENDANCE FETCH] Firestore returned documents count:", snapshot.size);
 
-          const flagged = snapshot.docs
-            .map((doc) => ({
+        const flagged = snapshot.docs
+          .map((doc) => {
+            const data: any = doc.data();
+            const { subjects, overall } = extractSubjectsAndAttendance(data);
+            const lowSubjects = Object.entries(subjects)
+              .filter(([_, score]) => Number(score) < 75)
+              .map(([subject, score]) => ({ subject, attendance: Number(score) }));
+
+            const att = Number(data.attendance ?? overall);
+            const isFlagged = att < 75 || lowSubjects.length > 0;
+
+            return {
               id: doc.id,
-              ...doc.data(),
-            }))
-            .filter((student: any) => Number(student.attendance) < 75);
+              ...data,
+              subjects,
+              attendance: att,
+              flaggedSubjects: lowSubjects,
+              isFlagged,
+            };
+          })
+          .filter((student: any) => student.isFlagged);
 
-          setFlaggedStudents(flagged);
+        console.log("[LOW ATTENDANCE FETCH] Flagged students count:", flagged.length);
+        setFlaggedStudents(flagged);
 
-          const critical = flagged.filter(
-            (student: any) => Number(student.attendance) < 60,
+        const critical = flagged.filter((student: any) => {
+          const overall = Number(student.attendance);
+          const hasCriticalSubject = (student.flaggedSubjects || []).some(
+            (s: any) => s.attendance < 60,
           );
+          return overall < 60 || hasCriticalSubject;
+        });
 
-          setCriticalCount(critical.length);
-        } catch (error) {
-          console.error("Error fetching low-attendance students:", error);
-        }
-      } else {
-        window.location.href = "/";
+        setCriticalCount(critical.length);
+      } catch (error) {
+        console.error("Error fetching low-attendance students:", error);
       }
-    });
+    };
 
-    return () => unsubscribe();
+    fetchFlaggedStudents();
   }, []);
 
   const departments = useMemo(
@@ -292,6 +309,11 @@ function LowAttendancePage() {
                       </td>
                       <td className="px-4 py-3">
                         <div className="text-foreground">{s.parentName}</div>
+                        {s.parentEmail && (
+                          <div className="text-xs font-mono text-muted-foreground">
+                            {s.parentEmail}
+                          </div>
+                        )}
                         <div className="text-xs tabular-nums text-muted-foreground">
                           {s.parentphone}
                         </div>

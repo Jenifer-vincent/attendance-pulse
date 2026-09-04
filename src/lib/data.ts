@@ -15,6 +15,9 @@ export type Student = {
   attendance: number;
   parentName: string;
   parentPhone: string;
+  parentEmail?: string;
+  subjects?: Record<string, number>;
+  flaggedSubjects?: Array<{ subject: string; attendance: number }>;
 };
 
 export type NotificationStatus = "pending" | "sent" | "failed";
@@ -26,6 +29,7 @@ export type Notification = {
   status: NotificationStatus;
   timestamp: string;
   error?: string;
+  flaggedSubjects?: Array<{ subject: string; attendance: number }>;
 };
 
 export type LogStatus = "completed" | "in_progress" | "failed";
