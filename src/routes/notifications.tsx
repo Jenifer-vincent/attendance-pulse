@@ -7,6 +7,7 @@ import {
   getDocs,
   updateDoc,
   doc,
+  setDoc,
   serverTimestamp,
   addDoc,
 } from "firebase/firestore";
@@ -22,6 +23,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { extractSubjectsAndAttendance, validateParentEmail } from "./preview";
 
 export const Route = createFileRoute("/notifications")({
   head: () => ({
@@ -29,12 +31,12 @@ export const Route = createFileRoute("/notifications")({
       { title: "Parent notifications — AttendPulse" },
       {
         name: "description",
-        content: "Manage pending, sent, and failed WhatsApp alerts to parents.",
+        content: "Manage pending, sent, and failed email alerts to parents.",
       },
       { property: "og:title", content: "Parent notifications — AttendPulse" },
       {
         property: "og:description",
-        content: "Manage pending, sent, and failed WhatsApp alerts to parents.",
+        content: "Manage pending, sent, and failed email alerts to parents.",
       },
     ],
   }),
@@ -48,123 +50,202 @@ function NotifPage() {
   const [tab, setTab] = useState<Tab>("pending");
   const [confirm, setConfirm] = useState(false);
   const [notifications, setNotifications] = useState<any[]>([]);
+  const [sending, setSending] = useState(false);
 
   const counts = {
     pending: notifications.filter((n) => n.status === "pending").length,
     sent: notifications.filter((n) => n.status === "sent").length,
     failed: notifications.filter((n) => n.status === "failed").length,
   };
-  useEffect(() => {
-    const fetchNotifications = async () => {
-      try {
-        // Get all students
-        const studentSnapshot = await getDocs(
-          collection(db, "students")
-        );
-        console.log("STUDENTS FOUND:", studentSnapshot.size);
 
-        studentSnapshot.docs.forEach((studentDoc) => {
-          console.log(
-            "STUDENT:",
-            studentDoc.id,
-            studentDoc.data()
-          );
-        });
+  const fetchNotifications = async () => {
+    try {
+      // 1. Get all students and deduplicate by registerNo
+      const studentSnapshot = await getDocs(collection(db, "students"));
+      const studentMap = new Map<string, any>();
 
-        // Get existing notifications
-        const notificationSnapshot = await getDocs(
-          collection(db, "Notifications")
-        );
-
-        const existingNotifications = notificationSnapshot.docs.map((d) => ({
-          id: d.id,
-          ...d.data(),
-        }));
-
-        // Existing student IDs that already have notifications
-        const existingStudentIds = new Set(
-          existingNotifications.map((n: any) => n.stud_id)
-        );
-
-        // Create notifications for uploaded students below 75%
-        const newNotifications = [];
-
-        for (const studentDoc of studentSnapshot.docs) {
-          const student = studentDoc.data();
-
-          const subjects = student.subjects || {};
+      studentSnapshot.docs.forEach((studentDoc) => {
+        const data = studentDoc.data();
+        const regNo = String(data.registerNo ?? data.register_no ?? studentDoc.id).trim().toUpperCase();
+        if (!studentMap.has(regNo)) {
+          const { subjects, overall } = extractSubjectsAndAttendance(data);
           const lowSubjects = Object.entries(subjects)
             .filter(([_, score]) => Number(score) < 75)
             .map(([subject, score]) => ({ subject, attendance: Number(score) }));
 
-          const attendance = Number(student.attendance ?? 0);
-          const isLow = attendance < 75 || lowSubjects.length > 0;
-
-          console.log(
-            "CHECKING STUDENT:",
-            studentDoc.id,
-            "attendance:",
-            attendance,
-            "lowSubjects:",
-            lowSubjects,
-            "already has notification:",
-            existingStudentIds.has(studentDoc.id)
-          );
-
-          if (
-            isLow &&
-            !existingStudentIds.has(studentDoc.id)
-          ) {
-            const notificationData = {
-              stud_id: studentDoc.id,
-              status: "pending",
-              subject: "Low attendance alert",
-              flaggedSubjects: lowSubjects,
-              timestamp: serverTimestamp(),
-            };
-
-            const newDoc = await addDoc(
-              collection(db, "Notifications"),
-              notificationData
-            );
-
-            newNotifications.push({
-              id: newDoc.id,
-              ...notificationData,
-              studentName: student.name ?? "Unknown student",
-              parentPhone: student.parentphone ?? "Not available",
-            });
-          }
+          studentMap.set(regNo, {
+            id: studentDoc.id,
+            registerNo: regNo,
+            ...data,
+            subjects,
+            attendance: Number(data.attendance ?? overall),
+            flaggedSubjects: lowSubjects,
+          });
         }
+      });
 
-        // Build final notification list
-        const data = [
-          ...existingNotifications.map((notification: any) => {
-            const student = studentSnapshot.docs.find(
-              (s) => s.id === notification.stud_id
-            );
+      // 2. Get existing notifications
+      const notificationSnapshot = await getDocs(collection(db, "Notifications"));
+      const notifMap = new Map<string, any>();
 
-            const studentData = student?.data();
+      notificationSnapshot.docs.forEach((d) => {
+        const data = d.data();
+        const studId = data.stud_id || data.registerNo || d.id;
+        const regNo = String(data.registerNo ?? studId).trim().toUpperCase();
 
-            return {
-              ...notification,
-              studentName: studentData?.name ?? "Unknown student",
-              parentPhone: studentData?.parentphone ?? "Not available",
-            };
-          }),
-          ...newNotifications,
-        ];
+        if (!notifMap.has(regNo)) {
+          notifMap.set(regNo, {
+            id: d.id,
+            stud_id: studId,
+            ...data,
+          });
+        }
+      });
 
-        console.log("NOTIFICATIONS:", data);
+      // 3. Create missing pending notifications for flagged students
+      const finalNotifs: any[] = [];
 
-        setNotifications(data);
-      } catch (error) {
-        console.error("Error fetching notifications:", error);
+      for (const [regNo, student] of studentMap.entries()) {
+        const isLow = student.attendance < 75 || student.flaggedSubjects.length > 0;
+        if (!isLow) continue;
+
+        if (notifMap.has(regNo)) {
+          const existing = notifMap.get(regNo);
+          finalNotifs.push({
+            ...existing,
+            studentName: student.name ?? "Unknown student",
+            parentEmail: student.parentEmail ?? existing.parentEmail ?? "",
+            parentPhone: student.parentphone ?? existing.parentPhone ?? "",
+            flaggedSubjects: student.flaggedSubjects,
+          });
+        } else {
+          const newNotifData = {
+            stud_id: student.id,
+            registerNo: regNo,
+            studentName: student.name ?? "Unknown student",
+            parentEmail: student.parentEmail ?? "",
+            parentPhone: student.parentphone ?? "",
+            status: "pending",
+            subject: "Low attendance alert",
+            flaggedSubjects: student.flaggedSubjects,
+            timestamp: new Date().toISOString(),
+          };
+
+          await setDoc(doc(db, "Notifications", regNo), {
+            ...newNotifData,
+            timestamp: serverTimestamp(),
+          });
+
+          finalNotifs.push({
+            id: regNo,
+            ...newNotifData,
+          });
+        }
       }
-    };
 
+      setNotifications(finalNotifs);
+    } catch (error) {
+      console.error("Error fetching notifications:", error);
+    }
+  };
+
+  useEffect(() => {
     fetchNotifications();
   }, []);
+
+  const sendSingleNotification = async (notification: any) => {
+    const emailVal = validateParentEmail(notification.parentEmail);
+    if (emailVal.status !== "valid") {
+      toast.error(`Parent email for ${notification.studentName} is missing or invalid.`);
+      return false;
+    }
+
+    try {
+      const res = await fetch("/api/attendance/notify-parent", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          studentName: notification.studentName,
+          parentEmail: notification.parentEmail.trim(),
+          flaggedSubjects: notification.flaggedSubjects || [],
+        }),
+      });
+
+      const json = await res.json();
+
+      if (!res.ok || !json.success) {
+        throw new Error(json.message || "Failed to send email");
+      }
+
+      await setDoc(
+        doc(db, "Notifications", notification.id),
+        {
+          status: "sent",
+          sentAt: serverTimestamp(),
+        },
+        { merge: true },
+      );
+
+      setNotifications((prev) =>
+        prev.map((n) => (n.id === notification.id ? { ...n, status: "sent" } : n)),
+      );
+
+      toast.success(`Email alert sent to ${notification.parentEmail}`);
+      return true;
+    } catch (error: any) {
+      const errMsg = error?.message || String(error);
+      await setDoc(
+        doc(db, "Notifications", notification.id),
+        {
+          status: "failed",
+          error: errMsg,
+          timestamp: serverTimestamp(),
+        },
+        { merge: true },
+      );
+
+      setNotifications((prev) =>
+        prev.map((n) => (n.id === notification.id ? { ...n, status: "failed", error: errMsg } : n)),
+      );
+
+      toast.error(`Failed to send email to ${notification.studentName}: ${errMsg}`);
+      return false;
+    }
+  };
+
+  const handleSendAllPending = async () => {
+    setSending(true);
+    const pendingNotifications = notifications.filter((n) => n.status === "pending");
+    let sentCount = 0;
+    let failCount = 0;
+
+    for (const notif of pendingNotifications) {
+      const ok = await sendSingleNotification(notif);
+      if (ok) sentCount++;
+      else failCount++;
+    }
+
+    if (sentCount > 0) {
+      await addDoc(collection(db, "systemlogs"), {
+        action: "notification",
+        uploadedBy: auth.currentUser?.email ?? "Admin",
+        records: pendingNotifications.length,
+        flagged: pendingNotifications.length,
+        sent: sentCount,
+        failed: failCount,
+        status: "success",
+        timestamp: serverTimestamp(),
+        fileName: "Parent notifications",
+        messageTemplate: "Low attendance email alert",
+      });
+    }
+
+    setSending(false);
+    setConfirm(false);
+    setTab("sent");
+    toast.success(`Batch email dispatch completed: ${sentCount} sent, ${failCount} failed.`);
+  };
+
   const rows = notifications.filter((n) => n.status === tab);
 
   return (
@@ -175,56 +256,15 @@ function NotifPage() {
             Parent notifications
           </h2>
           <p className="mt-0.5 text-sm text-muted-foreground">
-            WhatsApp alerts sent to parents of flagged students.
+            Email alerts sent to parents of flagged students.
           </p>
         </div>
         <button
-          onClick={async () => {
-            try {
-              const pendingNotifications = notifications.filter(
-                (n) => n.status === "pending"
-              );
-
-              for (const notification of pendingNotifications) {
-                await updateDoc(doc(db, "Notifications", notification.id), {
-                  status: "sent",
-                  sentAt: serverTimestamp(),
-                });
-              }
-
-              setNotifications((prev) =>
-                prev.map((n) =>
-                  n.status === "pending"
-                    ? { ...n, status: "sent" }
-                    : n
-                )
-              );
-
-              await addDoc(collection(db, "systemlogs"), {
-                action: "notification",
-                uploadedBy: auth.currentUser?.email ?? "Unknown",
-                records: pendingNotifications.length,
-                flagged: pendingNotifications.length,
-                sent: pendingNotifications.length,
-                failed: 0,
-                status: "success",
-                timestamp: serverTimestamp(),
-                fileName: "Parent notifications",
-                messageTemplate: "Low attendance alert",
-              });
-
-              setConfirm(false);
-              setTab("sent");
-
-              toast.success(`${pendingNotifications.length} alerts sent successfully`);
-            } catch (error) {
-              console.error("Error sending notifications:", error);
-              toast.error("Failed to send notifications.");
-            }
-          }}
-          className="btn-primary"
+          onClick={() => setConfirm(true)}
+          disabled={counts.pending === 0 || sending}
+          className="btn-primary disabled:opacity-50 disabled:cursor-not-allowed"
         >
-          <Send size={14} /> Confirm & send
+          <Send size={14} /> {sending ? "Sending emails..." : "Confirm & send"}
         </button>
       </div>
 
@@ -279,14 +319,14 @@ function NotifPage() {
                   <div className="flex items-center justify-between">
                     <span className="font-medium text-foreground text-sm">{n.studentName}</span>
                     <span className="text-xs text-muted-foreground tabular-nums">
-                      {new Date(n.timestamp).toLocaleDateString()}
+                      {n.timestamp ? new Date(n.timestamp).toLocaleDateString() : "Recent"}
                     </span>
                   </div>
                   <div className="flex justify-between items-center text-xs">
                     <div>
-                      <span className="text-muted-foreground text-[11px] block">Phone:</span>
-                      <span className="font-mono tabular-nums text-foreground">
-                        {n.parentPhone}
+                      <span className="text-muted-foreground text-[11px] block">Parent Email:</span>
+                      <span className="font-mono text-foreground">
+                        {n.parentEmail || "Email missing"}
                       </span>
                     </div>
                     <div className="text-right">
@@ -313,10 +353,10 @@ function NotifPage() {
                   {tab === "failed" && (
                     <div className="flex justify-end pt-1">
                       <button
-                        onClick={() => toast.success(`Retrying alert for ${n.studentName}`)}
+                        onClick={() => sendSingleNotification(n)}
                         className="btn-secondary h-8 text-xs px-2.5"
                       >
-                        <RotateCw size={12} /> Retry
+                        <RotateCw size={12} /> Retry email
                       </button>
                     </div>
                   )}
@@ -330,7 +370,7 @@ function NotifPage() {
                 <thead className="bg-muted/60">
                   <tr className="text-left text-xs font-semibold text-muted-foreground">
                     <th className="px-4 py-2.5">Student</th>
-                    <th className="px-4 py-2.5">Parent phone</th>
+                    <th className="px-4 py-2.5">Parent Email</th>
                     <th className="px-4 py-2.5">Status</th>
                     <th className="px-4 py-2.5">Timestamp</th>
                     <th className="px-4 py-2.5"></th>
@@ -340,8 +380,8 @@ function NotifPage() {
                   {rows.map((n) => (
                     <tr key={n.id} className="transition hover:bg-muted/40">
                       <td className="px-4 py-3 font-medium text-foreground">{n.studentName}</td>
-                      <td className="px-4 py-3 tabular-nums text-muted-foreground">
-                        {n.parentPhone}
+                      <td className="px-4 py-3 font-mono text-xs text-muted-foreground">
+                        {n.parentEmail || "Missing"}
                       </td>
                       <td className="px-4 py-3">
                         <div className="flex flex-col gap-1">
@@ -366,15 +406,15 @@ function NotifPage() {
                         </div>
                       </td>
                       <td className="px-4 py-3 tabular-nums text-muted-foreground">
-                        {new Date(n.timestamp).toLocaleString()}
+                        {n.timestamp ? new Date(n.timestamp).toLocaleString() : "Recent"}
                       </td>
                       <td className="px-4 py-3 text-right">
                         {tab === "failed" && (
                           <button
-                            onClick={() => toast.success(`Retrying alert for ${n.studentName}`)}
+                            onClick={() => sendSingleNotification(n)}
                             className="btn-secondary h-8 text-xs"
                           >
-                            <RotateCw size={12} /> Retry
+                            <RotateCw size={12} /> Retry email
                           </button>
                         )}
                       </td>
@@ -390,10 +430,9 @@ function NotifPage() {
       <Dialog open={confirm} onOpenChange={setConfirm}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Send {counts.pending} notifications?</DialogTitle>
+            <DialogTitle>Send {counts.pending} parent email notifications?</DialogTitle>
             <DialogDescription>
-              This will dispatch WhatsApp alerts to the parents of all pending flagged students.
-              This action cannot be undone.
+              This will send attendance warning emails via Brevo SMTP to parents of all pending flagged students.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
@@ -401,13 +440,11 @@ function NotifPage() {
               Cancel
             </button>
             <button
-              onClick={() => {
-                setConfirm(false);
-                toast.success(`${counts.pending} alerts queued`);
-              }}
+              onClick={handleSendAllPending}
+              disabled={sending}
               className="btn-primary"
             >
-              <Send size={14} /> Confirm & send
+              <Send size={14} /> {sending ? "Sending..." : "Confirm & send emails"}
             </button>
           </DialogFooter>
         </DialogContent>

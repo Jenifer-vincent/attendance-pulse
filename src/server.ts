@@ -47,6 +47,58 @@ function isH3SwallowedErrorBody(body: string): boolean {
 export default {
   async fetch(request: Request, env: unknown, ctx: unknown) {
     try {
+      const url = new URL(request.url);
+      if (request.method === "POST" && url.pathname === "/api/attendance/notify-parent") {
+        try {
+          const body = (await request.json()) as any;
+          const { studentName, parentEmail, flaggedSubjects } = body || {};
+
+          if (!parentEmail || typeof parentEmail !== "string" || !parentEmail.includes("@")) {
+            return new Response(
+              JSON.stringify({ success: false, message: "Valid parent email is required" }),
+              { status: 400, headers: { "Content-Type": "application/json" } },
+            );
+          }
+
+          if (!studentName || typeof studentName !== "string") {
+            return new Response(
+              JSON.stringify({ success: false, message: "Student name is required" }),
+              { status: 400, headers: { "Content-Type": "application/json" } },
+            );
+          }
+
+          if (!Array.isArray(flaggedSubjects)) {
+            return new Response(
+              JSON.stringify({ success: false, message: "Flagged subjects must be an array" }),
+              { status: 400, headers: { "Content-Type": "application/json" } },
+            );
+          }
+
+          const recipient =
+            process.env.TEST_MODE === "true" && process.env.TEST_NOTIFICATION_EMAIL
+              ? process.env.TEST_NOTIFICATION_EMAIL
+              : parentEmail.trim();
+
+          const { sendAttendanceEmail } = await import("../backend/emailService.js");
+          await sendAttendanceEmail({
+            to: recipient,
+            studentName: studentName.trim(),
+            subjects: flaggedSubjects,
+          });
+
+          return new Response(
+            JSON.stringify({ success: true, message: "Attendance email sent successfully" }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        } catch (error: any) {
+          console.error("[EMAIL API ERROR]", error);
+          return new Response(
+            JSON.stringify({ success: false, message: error?.message || "Failed to send email" }),
+            { status: 500, headers: { "Content-Type": "application/json" } },
+          );
+        }
+      }
+
       const handler = await getServerEntry();
       const response = await handler.fetch(request, env, ctx);
       return await normalizeCatastrophicSsrResponse(response);

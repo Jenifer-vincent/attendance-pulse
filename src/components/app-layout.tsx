@@ -21,7 +21,10 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { flaggedStudents, notifications, currentUser, initialsOf } from "@/lib/data";
+import { initialsOf } from "@/lib/data";
+import { auth, db } from "@/lib/firebase";
+import { collection, getDocs, doc, getDoc } from "firebase/firestore";
+import { onAuthStateChanged } from "firebase/auth";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -41,34 +44,6 @@ type AppRoute =
   | "/logs"
   | "/profile";
 
-const nav: {
-  to: AppRoute;
-  label: string;
-  icon: LucideIcon;
-  badge?: () => number;
-  badgeTone?: "danger" | "warning";
-}[] = [
-  { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
-  { to: "/upload", label: "Upload", icon: Upload },
-  { to: "/preview", label: "Preview", icon: Eye },
-  {
-    to: "/low-attendance",
-    label: "Low Attendance",
-    icon: AlertTriangle,
-    badge: () => flaggedStudents.length,
-    badgeTone: "danger",
-  },
-  {
-    to: "/notifications",
-    label: "Notifications",
-    icon: Send,
-    badge: () => notifications.filter((n) => n.status === "pending").length,
-    badgeTone: "warning",
-  },
-  { to: "/logs", label: "Logs", icon: ScrollText },
-  { to: "/profile", label: "Profile", icon: User },
-];
-
 const titleMap: Record<string, string> = {
   "/dashboard": "Dashboard",
   "/upload": "Upload Attendance",
@@ -85,6 +60,64 @@ export function AppLayout({ children }: { children: ReactNode }) {
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
 
+  const [flaggedCount, setFlaggedCount] = useState(0);
+  const [pendingNotifCount, setPendingNotifCount] = useState(0);
+  const [recentNotifs, setRecentNotifs] = useState<any[]>([]);
+  const [userEmail, setUserEmail] = useState("");
+  const [userName, setUserName] = useState("");
+
+  useEffect(() => {
+    const fetchMetrics = async () => {
+      try {
+        const studentSnap = await getDocs(collection(db, "students"));
+        const studentMap = new Map<string, any>();
+        studentSnap.docs.forEach((docSnap) => {
+          const data = docSnap.data();
+          const regNo = String(data.registerNo ?? data.register_no ?? docSnap.id).trim().toUpperCase();
+          if (!studentMap.has(regNo)) {
+            studentMap.set(regNo, data);
+          }
+        });
+        const uniqueStudents = Array.from(studentMap.values());
+        const low = uniqueStudents.filter((s) => Number(s.attendance) < 75);
+        setFlaggedCount(low.length);
+
+        const notifSnap = await getDocs(collection(db, "Notifications"));
+        const notifList: any[] = [];
+        let pendingCount = 0;
+        notifSnap.docs.forEach((d) => {
+          const data = d.data();
+          if (data.status === "pending") pendingCount++;
+          notifList.push({ id: d.id, ...data });
+        });
+        setPendingNotifCount(pendingCount);
+        setRecentNotifs(notifList.slice(0, 4));
+      } catch (err) {
+        console.error("Error loading AppLayout metrics:", err);
+      }
+    };
+
+    fetchMetrics();
+
+    const unsub = onAuthStateChanged(auth, async (u) => {
+      if (u) {
+        setUserEmail(u.email || "");
+        try {
+          const uDoc = await getDoc(doc(db, "users", u.uid));
+          if (uDoc.exists()) {
+            setUserName(uDoc.data().name || u.displayName || u.email?.split("@")[0] || "User");
+          } else {
+            setUserName(u.displayName || u.email?.split("@")[0] || "User");
+          }
+        } catch {
+          setUserName(u.displayName || u.email?.split("@")[0] || "User");
+        }
+      }
+    });
+
+    return () => unsub();
+  }, []);
+
   const title = titleMap[pathname] ?? "AttendPulse";
 
   return (
@@ -99,6 +132,8 @@ export function AppLayout({ children }: { children: ReactNode }) {
         <SidebarContent
           collapsed={collapsed}
           pathname={pathname}
+          flaggedCount={flaggedCount}
+          pendingNotifCount={pendingNotifCount}
           onToggle={() => setCollapsed(!collapsed)}
         />
       </aside>
@@ -111,6 +146,8 @@ export function AppLayout({ children }: { children: ReactNode }) {
             <SidebarContent
               collapsed={false}
               pathname={pathname}
+              flaggedCount={flaggedCount}
+              pendingNotifCount={pendingNotifCount}
               onNavigate={() => setMobileOpen(false)}
             />
           </aside>
@@ -153,19 +190,19 @@ export function AppLayout({ children }: { children: ReactNode }) {
             <DropdownMenu>
               <DropdownMenuTrigger className="relative grid h-9 w-9 place-items-center rounded-md text-muted-foreground hover:bg-muted">
                 <Bell size={18} strokeWidth={1.75} />
-                {notifications.some((n) => n.status === "pending") && (
+                {pendingNotifCount > 0 && (
                   <span className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-danger ring-2 ring-surface" />
                 )}
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="w-80">
                 <DropdownMenuLabel>Notifications</DropdownMenuLabel>
                 <DropdownMenuSeparator />
-                {notifications.length === 0 ? (
+                {recentNotifs.length === 0 ? (
                   <div className="px-2 py-4 text-center text-xs text-muted-foreground">
                     No notifications yet
                   </div>
                 ) : (
-                  notifications.slice(0, 4).map((n) => (
+                  recentNotifs.map((n) => (
                     <DropdownMenuItem key={n.id} className="flex flex-col items-start gap-0.5 py-2">
                       <span className="text-sm font-medium">{n.studentName}</span>
                       <span className="text-xs text-muted-foreground">
@@ -185,7 +222,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
               <DropdownMenuTrigger className="flex items-center gap-2 rounded-md p-1 hover:bg-muted">
                 <Avatar className="h-8 w-8">
                   <AvatarFallback className="bg-primary-tint text-primary text-xs font-semibold">
-                    {initialsOf(currentUser.name) ?? <User size={14} />}
+                    {initialsOf(userName) ?? <User size={14} />}
                   </AvatarFallback>
                 </Avatar>
               </DropdownMenuTrigger>
@@ -193,10 +230,10 @@ export function AppLayout({ children }: { children: ReactNode }) {
                 <DropdownMenuLabel>
                   <div className="flex flex-col">
                     <span className="text-sm font-medium">
-                      {currentUser.name || "Your account"}
+                      {userName || "Your account"}
                     </span>
                     <span className="text-xs text-muted-foreground">
-                      {currentUser.email || "No email on file"}
+                      {userEmail || "No email on file"}
                     </span>
                   </div>
                 </DropdownMenuLabel>
@@ -233,15 +270,47 @@ type BeforeInstallPromptEvent = Event & {
 function SidebarContent({
   collapsed,
   pathname,
+  flaggedCount = 0,
+  pendingNotifCount = 0,
   onToggle,
   onNavigate,
 }: {
   collapsed: boolean;
   pathname: string;
+  flaggedCount?: number;
+  pendingNotifCount?: number;
   onToggle?: () => void;
   onNavigate?: () => void;
 }) {
   const [deferredPrompt, setDeferredPrompt] = useState<BeforeInstallPromptEvent | null>(null);
+
+  const navItems: {
+    to: AppRoute;
+    label: string;
+    icon: LucideIcon;
+    badge?: number;
+    badgeTone?: "danger" | "warning";
+  }[] = [
+    { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
+    { to: "/upload", label: "Upload", icon: Upload },
+    { to: "/preview", label: "Preview", icon: Eye },
+    {
+      to: "/low-attendance",
+      label: "Low Attendance",
+      icon: AlertTriangle,
+      badge: flaggedCount,
+      badgeTone: "danger",
+    },
+    {
+      to: "/notifications",
+      label: "Notifications",
+      icon: Send,
+      badge: pendingNotifCount,
+      badgeTone: "warning",
+    },
+    { to: "/logs", label: "Logs", icon: ScrollText },
+    { to: "/profile", label: "Profile", icon: User },
+  ];
 
   useEffect(() => {
     const handler = (e: Event) => {
@@ -269,10 +338,12 @@ function SidebarContent({
           collapsed && "justify-center px-0",
         )}
       >
-        <div className="flex items-center gap-2">
-          <div className="grid h-8 w-8 shrink-0 place-items-center rounded-md bg-primary text-primary-foreground">
-            <GraduationCap size={18} strokeWidth={2} />
-          </div>
+        <div className="flex items-center gap-2.5">
+          <img
+            src="/logo.jpg"
+            alt="AttendPulse"
+            className="h-8 w-8 rounded-full object-cover shrink-0 border border-primary/20"
+          />
           {!collapsed && (
             <span className="font-display text-[15px] font-bold tracking-tight text-foreground">
               AttendPulse
@@ -290,10 +361,10 @@ function SidebarContent({
       </div>
 
       <nav className="flex-1 space-y-1 p-2">
-        {nav.map((item) => {
+        {navItems.map((item) => {
           const active = pathname === item.to;
           const Icon = item.icon;
-          const badge = item.badge?.();
+          const badge = item.badge;
           return (
             <Link
               key={item.to}
@@ -312,7 +383,7 @@ function SidebarContent({
               )}
               <Icon size={18} strokeWidth={1.75} className="shrink-0" />
               {!collapsed && <span className="flex-1 truncate">{item.label}</span>}
-              {!collapsed && badge ? (
+              {!collapsed && badge && badge > 0 ? (
                 <span
                   className={cn(
                     "rounded-full px-1.5 py-0.5 text-[10px] font-semibold tabular-nums",

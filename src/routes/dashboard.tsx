@@ -13,12 +13,6 @@ import {
   Activity,
   type LucideIcon,
 } from "lucide-react";
-import {
-  students,
-  flaggedStudents,
-  notifications,
-  logs,
-} from "@/lib/data";
 import { Area, AreaChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { cn } from "@/lib/utils";
 import { onAuthStateChanged } from "firebase/auth";
@@ -44,52 +38,6 @@ export const Route = createFileRoute("/dashboard")({
   component: Dashboard,
 });
 
-const departmentCount = new Set(students.map((s) => s.department)).size;
-const lastLog = [...logs].sort(
-  (a, b) => new Date(b.datetime).getTime() - new Date(a.datetime).getTime(),
-)[0];
-
-const stats = [
-  {
-    label: "Total Students",
-    value: students.length,
-    sub:
-      departmentCount > 0
-        ? `Across ${departmentCount} department${departmentCount === 1 ? "" : "s"}`
-        : "No students uploaded yet",
-    icon: Users,
-    tone: "info" as const,
-  },
-  {
-    label: "Below 75%",
-    value: flaggedStudents.length,
-    sub: "Needs parent alerts",
-    icon: AlertTriangle,
-    tone: "danger" as const,
-  },
-  {
-    label: "Messages Sent Today",
-    value: notifications.filter((n) => n.status === "sent").length,
-    sub: notifications.length > 0 ? "Delivered alerts" : "No messages sent yet",
-    icon: Send,
-    tone: "success" as const,
-  },
-  {
-    label: "Total Notifications",
-    value: notifications.length,
-    sub: notifications.length > 0 ? "All time" : "No notifications yet",
-    icon: Bell,
-    tone: "warning" as const,
-  },
-  {
-    label: "Last Upload",
-    value: "—",
-    sub: "No uploads yet",
-    icon: CalendarClock,
-    tone: "neutral" as const,
-  },
-];
-
 const toneStyles = {
   info: "bg-info-bg text-info-fg",
   danger: "bg-danger-bg text-danger-fg",
@@ -102,11 +50,13 @@ function Dashboard() {
   const [checkingAuth, setCheckingAuth] = useState(true);
   const [studentCount, setStudentCount] = useState(0);
   const [flaggedCount, setFlaggedCount] = useState(0);
+  const [departmentCount, setDepartmentCount] = useState(0);
   const [notificationCount, setNotificationCount] = useState(0);
   const [sentNotificationCount, setSentNotificationCount] = useState(0);
   const [lastUpload, setLastUpload] = useState<any>(null);
   const [recentActivityData, setRecentActivityData] = useState<any[]>([]);
   const [attendanceTrendData, setAttendanceTrendData] = useState<any[]>([]);
+
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
       if (user) {
@@ -115,21 +65,32 @@ function Dashboard() {
         try {
           const snapshot = await getDocs(collection(db, "students"));
 
-          setStudentCount(snapshot.size);
-
-          const below75 = snapshot.docs.filter((doc) => {
+          const studentMap = new Map<string, any>();
+          snapshot.docs.forEach((doc) => {
             const data = doc.data();
+            const regNo = String(data.registerNo ?? data.register_no ?? doc.id).trim().toUpperCase();
+            if (!studentMap.has(regNo)) {
+              studentMap.set(regNo, data);
+            }
+          });
+
+          const uniqueStudents = Array.from(studentMap.values());
+          setStudentCount(uniqueStudents.length);
+
+          const depts = new Set(uniqueStudents.map((s) => s.department).filter(Boolean));
+          setDepartmentCount(depts.size);
+
+          const below75 = uniqueStudents.filter((data) => {
             return Number(data.attendance) < 75;
           });
 
           setFlaggedCount(below75.length);
-          const totalAttendance = snapshot.docs.reduce((sum, doc) => {
-            const data = doc.data();
+          const totalAttendance = uniqueStudents.reduce((sum, data) => {
             return sum + Number(data.attendance || 0);
           }, 0);
 
           const averageAttendance =
-            snapshot.size > 0 ? totalAttendance / snapshot.size : 0;
+            uniqueStudents.length > 0 ? totalAttendance / uniqueStudents.length : 0;
 
           setAttendanceTrendData([
             {
@@ -232,6 +193,47 @@ function Dashboard() {
       clearTimeout(timeout);
     };
   }, []);
+
+  const stats = [
+    {
+      label: "Total Students",
+      value: studentCount,
+      sub:
+        departmentCount > 0
+          ? `Across ${departmentCount} department${departmentCount === 1 ? "" : "s"}`
+          : "No students uploaded yet",
+      icon: Users,
+      tone: "info" as const,
+    },
+    {
+      label: "Below 75%",
+      value: flaggedCount,
+      sub: "Needs parent alerts",
+      icon: AlertTriangle,
+      tone: "danger" as const,
+    },
+    {
+      label: "Messages Sent Today",
+      value: sentNotificationCount,
+      sub: sentNotificationCount > 0 ? "Delivered alerts" : "No messages sent yet",
+      icon: Send,
+      tone: "success" as const,
+    },
+    {
+      label: "Total Notifications",
+      value: notificationCount,
+      sub: notificationCount > 0 ? "All time" : "No notifications yet",
+      icon: Bell,
+      tone: "warning" as const,
+    },
+    {
+      label: "Last Upload",
+      value: lastUpload?.timestamp?.toDate ? lastUpload.timestamp.toDate().toLocaleDateString() : "—",
+      sub: lastUpload ? `by ${lastUpload.uploadedBy ?? "Admin"}` : "No uploads yet",
+      icon: CalendarClock,
+      tone: "neutral" as const,
+    },
+  ];
 
   if (checkingAuth) {
     return <div>Checking authentication...</div>;
@@ -420,7 +422,7 @@ function Dashboard() {
             to="/notifications"
             icon={Send}
             title="Send notifications"
-            desc="Alert parents on WhatsApp"
+            desc="Alert parents via Email"
             tone="success"
           />
         </div>

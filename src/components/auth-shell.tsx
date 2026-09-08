@@ -14,11 +14,13 @@ export function AuthSplit({
     <div className="grid min-h-screen grid-cols-1 lg:grid-cols-2">
       {/* Left brand panel */}
       <div className="relative hidden overflow-hidden bg-primary lg:flex lg:flex-col lg:justify-between lg:p-12 text-primary-foreground">
-        <div className="flex items-center gap-2">
-          <div className="grid h-9 w-9 place-items-center rounded-md bg-primary-foreground/15 backdrop-blur">
-            <GraduationCap size={20} />
-          </div>
-          <span className="font-display text-lg font-bold tracking-tight">AttendPulse</span>
+        <div className="flex items-center gap-3">
+          <img
+            src="/logo.jpg"
+            alt="AttendPulse"
+            className="h-10 w-10 rounded-full object-cover shrink-0 border-2 border-amber-400"
+          />
+          <span className="font-display text-xl font-bold tracking-tight">AttendPulse</span>
         </div>
 
         <div className="relative">
@@ -59,10 +61,12 @@ export function AuthSplit({
       {/* Right form panel */}
       <div className="flex flex-col justify-center bg-surface px-6 py-12 sm:px-12 lg:px-16">
         <div className="mx-auto w-full max-w-sm">
-          <div className="mb-8 flex items-center gap-2 lg:hidden">
-            <div className="grid h-8 w-8 place-items-center rounded-md bg-primary text-primary-foreground">
-              <GraduationCap size={18} />
-            </div>
+          <div className="mb-8 flex items-center gap-2.5 lg:hidden">
+            <img
+              src="/logo.jpg"
+              alt="AttendPulse"
+              className="h-8 w-8 rounded-full object-cover shrink-0 border border-primary/20"
+            />
             <span className="font-display text-base font-bold tracking-tight">AttendPulse</span>
           </div>
           <h1 className="font-display text-2xl font-bold tracking-tight text-foreground">

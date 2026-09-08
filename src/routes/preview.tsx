@@ -11,7 +11,7 @@ import {
   ChevronUp,
 } from "lucide-react";
 import { auth, db } from "@/lib/firebase";
-import { collection, getDocs, addDoc } from "firebase/firestore";
+import { collection, getDocs, addDoc, doc, setDoc, deleteDoc } from "firebase/firestore";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 
@@ -214,15 +214,18 @@ function PreviewPage() {
           const rawRows = JSON.parse(previewData);
           console.log("[PREVIEW FETCH] Found previewRows in sessionStorage:", rawRows.length);
 
-          const data = rawRows.map((row: any, index: number) => {
+          const uniqueRowsMap = new Map<string, any>();
+          rawRows.forEach((row: any, index: number) => {
             const { subjects, overall } = extractSubjectsAndAttendance(row);
-            const regNo =
+            const regNo = String(
               row["Register No"] ??
               row.register_no ??
               row.registerNo ??
               row.reg_no ??
               row.regno ??
-              "";
+              `preview-${index}`
+            ).trim().toUpperCase();
+
             const name =
               row["Student Name"] ??
               row.student_name ??
@@ -252,38 +255,45 @@ function PreviewPage() {
 
             logParsedRowDetails(name, pEmail, subjects, overall);
 
-            return {
-              id: `preview-${index}`,
-              registerNo: regNo,
-              name: name,
-              department: dept,
-              year: yr,
-              attendance: overall,
-              parentName: pName,
-              parentEmail: pEmail,
-              parentphone: pPhone,
-              subjects: subjects,
-            };
+            if (!uniqueRowsMap.has(regNo)) {
+              uniqueRowsMap.set(regNo, {
+                id: `preview-${index}`,
+                registerNo: regNo,
+                name: name,
+                department: dept,
+                year: yr,
+                attendance: overall,
+                parentName: pName,
+                parentEmail: pEmail,
+                parentphone: pPhone,
+                subjects: subjects,
+              });
+            }
           });
 
-          setStudents(data);
+          setStudents(Array.from(uniqueRowsMap.values()));
         } else {
           console.log("[PREVIEW FETCH] Querying Firestore 'students' collection...");
           const snapshot = await getDocs(collection(db, "students"));
           console.log("[PREVIEW FETCH] Firestore returned documents count:", snapshot.size);
 
-          const data = snapshot.docs.map((doc) => {
+          const uniqueMap = new Map<string, any>();
+          snapshot.docs.forEach((doc) => {
             const docData = doc.data();
-            const { subjects, overall } = extractSubjectsAndAttendance(docData);
-            return {
-              id: doc.id,
-              ...docData,
-              subjects,
-              attendance: Number(docData.attendance ?? overall),
-            };
+            const regNo = String(docData.registerNo ?? doc.id).trim().toUpperCase();
+            if (!uniqueMap.has(regNo)) {
+              const { subjects, overall } = extractSubjectsAndAttendance(docData);
+              uniqueMap.set(regNo, {
+                id: doc.id,
+                ...docData,
+                registerNo: regNo,
+                subjects,
+                attendance: Number(docData.attendance ?? overall),
+              });
+            }
           });
 
-          setStudents(data);
+          setStudents(Array.from(uniqueMap.values()));
         }
       } catch (error: any) {
         console.error("[STUDENT FETCH ERROR]", error);
@@ -596,12 +606,46 @@ function PreviewPage() {
                   }
 
                   const uploadedRows = JSON.parse(previewData);
-                  console.log("[IMPORT] Records to upload:", uploadedRows.length);
+                  const excelRecords = uploadedRows.length;
 
+                  // 1. Group / Deduplicate rows by registerNo
+                  const uniqueRowsMap = new Map<string, any>();
                   for (const row of uploadedRows) {
+                    const rawRegNo =
+                      row["Register No"] ??
+                      row.register_no ??
+                      row.registerNo ??
+                      row.reg_no ??
+                      row.regno ??
+                      "";
+                    const regNo = String(rawRegNo).trim().toUpperCase();
+                    if (regNo) {
+                      uniqueRowsMap.set(regNo, row);
+                    }
+                  }
+
+                  const uniqueStudentsCount = uniqueRowsMap.size;
+                  const duplicatesSkipped = excelRecords - uniqueStudentsCount;
+
+                  // 2. Fetch existing students snapshot from Firestore
+                  const existingSnapshot = await getDocs(collection(db, "students"));
+                  const existingDocsByRegNo = new Map<string, string[]>();
+
+                  existingSnapshot.docs.forEach((d) => {
+                    const data = d.data();
+                    const regNo = String(data.registerNo ?? data.register_no ?? d.id).trim().toUpperCase();
+                    if (regNo) {
+                      const list = existingDocsByRegNo.get(regNo) || [];
+                      list.push(d.id);
+                      existingDocsByRegNo.set(regNo, list);
+                    }
+                  });
+
+                  let createdCount = 0;
+                  let updatedCount = 0;
+
+                  for (const [regNo, row] of uniqueRowsMap.entries()) {
                     const { subjects, overall } = extractSubjectsAndAttendance(row);
-                    const regNo =
-                      row["Register No"] ?? row.register_no ?? row.registerNo ?? "";
                     const studName =
                       row["Student Name"] ?? row.student_name ?? row.name ?? "";
                     const dept = row["Department"] ?? row.department ?? row.dept ?? "";
@@ -628,42 +672,48 @@ function PreviewPage() {
 
                     logParsedRowDetails(studName, pEmail, subjects, overall);
 
-                    console.log("[IMPORT] Writing student:", regNo, studName);
-                    console.log("[FIRESTORE IMPORT] Writing student:", {
+                    const hasExisting = existingDocsByRegNo.has(regNo);
+                    if (hasExisting) {
+                      updatedCount++;
+                    } else {
+                      createdCount++;
+                    }
+
+                    const studentDocData = {
                       registerNo: regNo,
                       name: studName,
+                      department: dept,
+                      year: yr,
                       parentName: pName,
                       parentEmail: pEmail,
                       parentphone: pPhone,
                       subjects: subjects,
                       attendance: overall,
-                    });
+                    };
 
-                    try {
-                      await addDoc(collection(db, "students"), {
-                        registerNo: regNo,
-                        name: studName,
-                        department: dept,
-                        year: yr,
-                        parentName: pName,
-                        parentEmail: pEmail,
-                        parentphone: pPhone,
-                        subjects: subjects,
-                        attendance: overall,
-                      });
-                    } catch (studentErr: any) {
-                      console.error(
-                        `[FIRESTORE IMPORT STUDENT ERROR] Failed writing student ${studName} (${regNo}):`,
-                        studentErr,
-                      );
-                      throw studentErr;
+                    // Write to deterministic document ID (students/{regNo})
+                    await setDoc(doc(db, "students", regNo), studentDocData, { merge: true });
+
+                    // Clean up any old duplicate docs for this regNo with auto-generated IDs
+                    const oldDocIds = existingDocsByRegNo.get(regNo) || [];
+                    for (const oldId of oldDocIds) {
+                      if (oldId !== regNo) {
+                        try {
+                          await deleteDoc(doc(db, "students", oldId));
+                        } catch (delErr) {
+                          console.error(`[IMPORT] Failed to delete duplicate doc ${oldId}:`, delErr);
+                        }
+                      }
                     }
                   }
 
-                  console.log("[IMPORT] Upload completed");
-
-                  const postImportSnapshot = await getDocs(collection(db, "students"));
-                  console.log("[IMPORT] Firestore students after upload:", postImportSnapshot.size);
+                  // 3. Log exact import statistics required by Section A
+                  console.log(`[IMPORT] Excel records: ${excelRecords}`);
+                  console.log(`[IMPORT] Unique students: ${uniqueStudentsCount}`);
+                  console.log(`[IMPORT] Created: ${createdCount}`);
+                  console.log(`[IMPORT] Updated: ${updatedCount}`);
+                  console.log(`[IMPORT] Duplicates skipped: ${duplicatesSkipped}`);
+                  console.log("[IMPORT] Import completed successfully");
 
                   const firstRowDept =
                     uploadedRows[0]?.department ??
@@ -675,8 +725,8 @@ function PreviewPage() {
                     action: "upload",
                     timestamp: new Date().toISOString(),
                     uploadedBy: auth.currentUser?.email ?? "Admin",
-                    records: uploadedRows.length,
-                    flagged: uploadedRows.filter((row: any) => {
+                    records: uniqueStudentsCount,
+                    flagged: Array.from(uniqueRowsMap.values()).filter((row: any) => {
                       const { subjects, overall } = extractSubjectsAndAttendance(row);
                       const hasLowSubject = Object.values(subjects).some((score) => Number(score) < 75);
                       return overall < 75 || hasLowSubject;
@@ -693,28 +743,31 @@ function PreviewPage() {
                   sessionStorage.removeItem("previewRows");
                   sessionStorage.removeItem("uploadFileName");
 
-                  const data = postImportSnapshot.docs.map((doc) => {
+                  const postImportSnapshot = await getDocs(collection(db, "students"));
+                  const dataMap = new Map<string, any>();
+                  postImportSnapshot.docs.forEach((doc) => {
                     const docData = doc.data();
-                    const { subjects, overall } = extractSubjectsAndAttendance(docData);
-                    return {
-                      id: doc.id,
-                      ...docData,
-                      subjects,
-                      attendance: Number(docData.attendance ?? overall),
-                    };
+                    const regNo = String(docData.registerNo ?? doc.id).trim().toUpperCase();
+                    if (!dataMap.has(regNo)) {
+                      const { subjects, overall } = extractSubjectsAndAttendance(docData);
+                      dataMap.set(regNo, {
+                        id: doc.id,
+                        ...docData,
+                        registerNo: regNo,
+                        subjects,
+                        attendance: Number(docData.attendance ?? overall),
+                      });
+                    }
                   });
-                  setStudents(data);
+                  setStudents(Array.from(dataMap.values()));
 
                   toast.success(
-                    `${uploadedRows.length} students imported successfully`,
+                    `${uniqueStudentsCount} unique students imported successfully`,
                   );
 
                   navigate({ to: "/low-attendance" });
                 } catch (error: any) {
                   console.error("[FIRESTORE IMPORT ERROR]", error);
-                  console.error("[FIRESTORE IMPORT ERROR MESSAGE]", error?.message);
-                  console.error("[FIRESTORE IMPORT ERROR CODE]", error?.code);
-                  console.error("[FIRESTORE IMPORT ERROR DETAILS]", error);
                   const errorMessage = error?.message || String(error);
                   toast.error(`Firestore import failed: ${errorMessage}`);
                 }
