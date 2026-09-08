@@ -29,7 +29,7 @@ const CRON_SCHEDULE = IS_TEST_MODE
   ? process.env.CRON_SCHEDULE_TEST || "*/1 * * * *"
   : process.env.CRON_SCHEDULE_PROD || "0 * * * *";
 
-const FIFTEEN_DAYS_MS = 15 * 24 * 60 * 60 * 1000;
+const TWENTY_DAYS_MS = 20 * 24 * 60 * 60 * 1000;
 const ONE_MINUTE_MS = 60 * 1000;
 
 /**
@@ -153,7 +153,7 @@ function loadState() {
   }
 
   const now = Date.now();
-  const nextNotificationAt = IS_TEST_MODE ? now : now + FIFTEEN_DAYS_MS;
+  const nextNotificationAt = IS_TEST_MODE ? now : now + TWENTY_DAYS_MS;
 
   const initialState = {
     nextNotificationAt,
@@ -188,13 +188,6 @@ export async function runAttendanceNotificationJob() {
   console.log("Checking students with attendance below 75%");
   console.log("[CRON] Fetching students from Firestore...");
 
-  const testEmail = process.env.TEST_NOTIFICATION_EMAIL;
-
-  if (!testEmail) {
-    const errorMsg = "TEST_NOTIFICATION_EMAIL is not defined in environment variables";
-    console.error(`[CRON] Attendance notification job failed: ${errorMsg}`);
-    throw new Error(errorMsg);
-  }
 
   const studentDocs = await fetchStudentDocuments();
   console.log(`[CRON] Students found: ${studentDocs.length}`);
@@ -204,6 +197,7 @@ export async function runAttendanceNotificationJob() {
   studentDocs.forEach(({ id, data }) => {
     const studentName = data.name || "Unknown Student";
     const parentName = data.parentName || "Parent/Guardian";
+    const parentEmail = data.parentEmail || data.parent_email || data.parentMail || "";
     const parentPhone = data.parentphone || data.parentPhone || "Not available";
     const subjects = data.subjects || {};
 
@@ -226,13 +220,13 @@ export async function runAttendanceNotificationJob() {
         attendance: overallAttendance,
       });
     }
-
-    if (lowSubjects.length > 0) {
+    if (lowSubjects.length > 0 && parentEmail) {
       eligibleStudents.push({
         docId: id,
         name: studentName,
         parentName,
         parentPhone,
+        parentEmail,
         lowSubjects,
       });
     }
@@ -272,10 +266,11 @@ export async function runAttendanceNotificationJob() {
     try {
       // Send email alert via emailService.js
       await sendAttendanceEmail({
-        to: testEmail,
+        to: student.parentEmail,
         studentName: student.name,
         subjects: student.lowSubjects,
       });
+
 
       // Update notification status to "sent"
       await notifRecord.updateStatus("sent");
@@ -331,7 +326,7 @@ async function checkAndExecuteScheduler() {
       console.error("[CRON] Error executing attendance notification job:", error.message || error);
     } finally {
       const completionTime = Date.now();
-      const nextInterval = IS_TEST_MODE ? ONE_MINUTE_MS : FIFTEEN_DAYS_MS;
+      const nextInterval = IS_TEST_MODE ? ONE_MINUTE_MS : TWENTY_DAYS_MS;
 
       const updatedState = { ...state, isRunning: false };
 
